@@ -1,0 +1,10 @@
+.venv/
+venv/
+__pycache__/
+*.pyc
+logs/
+sessions/
+proxy.txt
+proxy.txt.bak.*
+rotating.txt
+config.json
