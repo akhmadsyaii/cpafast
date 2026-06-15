@@ -27,12 +27,14 @@ VENV_DIR="venv"
 REQUIREMENTS="requirements.txt"
 QUICK_MODE=false
 INSTALL_BROWSER=true
+SKIP_GUI=false
 
 # Parse args
 for arg in "$@"; do
     case "$arg" in
         --quick) QUICK_MODE=true ;;
         --no-browser) INSTALL_BROWSER=false ;;
+        --no-gui) SKIP_GUI=true ;;
     esac
 done
 
@@ -65,6 +67,14 @@ check_cmd() {
         exit 1
     fi
 }
+
+# Auto-detect: skip GUI packages if no display server
+if [ "$SKIP_GUI" = false ]; then
+    if [ -z "$DISPLAY" ] && ! command -v xdpyinfo &>/dev/null; then
+        SKIP_GUI=true
+        warn "Tidak terdeteksi display server — GUI packages akan dilewati"
+    fi
+fi
 
 # ═══════════════════════════════════════════════════════════════════════
 #  WELCOME
@@ -154,18 +164,36 @@ echo -n "  $REQUIRED_PACKAGES packages akan diinstall ... "
 
 if $PIP install -r "$REQUIREMENTS" -q 2>&1; then
     echo -e "${GREEN}done${NC}"
-    # Verify key packages
-    KEY_PACKAGES="requests rich beautifulsoup4 lxml playwright customtkinter"
+    # Verify key packages (optional GUI packages handled separately)
+    KEY_PACKAGES="requests rich beautifulsoup4 lxml playwright"
+    GUI_PACKAGES="customtkinter pillow"
     MISSING=""
+    GUI_MISSING=""
     for pkg in $KEY_PACKAGES; do
         if ! $PYTHON_VENV -c "import $pkg" 2>/dev/null; then
             MISSING="$MISSING $pkg"
+        fi
+    done
+    for pkg in $GUI_PACKAGES; do
+        if ! $PYTHON_VENV -c "import $pkg" 2>/dev/null; then
+            GUI_MISSING="$GUI_MISSING $pkg"
         fi
     done
     if [ -n "$MISSING" ]; then
         warn "Beberapa package gagal diverifikasi:$MISSING"
         echo "  Mencoba install ulang..."
         $PIP install --force-reinstall $MISSING -q
+    fi
+    if [ -n "$GUI_MISSING" ]; then
+        if [ "$SKIP_GUI" = true ]; then
+            warn "GUI packages tidak terinstall:$GUI_MISSING"
+            warn "  → Bot tetap bisa jalan via: $PYTHON_VENV main.py tui"
+            warn "  → Untuk GUI, install display server: apt install xvfb"
+        else
+            warn "GUI packages gagal diverifikasi:$GUI_MISSING"
+            echo "  Mencoba install ulang..."
+            $PIP install --force-reinstall $GUI_MISSING -q
+        fi
     fi
     log "Semua dependencies terinstall"
 else
@@ -202,50 +230,76 @@ echo ""
 echo -e "${BOLD}🔍 Verifikasi instalasi...${NC}"
 
 $PYTHON_VENV -c "
+import os
 import sys
 sys.path.insert(0, '.')
-ok = True
-tests = [
+
+core_ok = True
+
+# ── Core dependencies (wajib) ───────────────────────────────────
+core_tests = [
     ('requests', 'requests'),
     ('bs4', 'BeautifulSoup'),
     ('lxml', 'lxml'),
     ('rich', 'rich'),
-    ('customtkinter', 'customtkinter'),
 ]
-for mod, name in tests:
+for mod, name in core_tests:
     try:
         __import__(mod)
-        print(f'  [✓] {name}')
+        print(f'  [✓] {name} — OK')
     except ImportError:
         print(f'  [✗] {name} — TIDAK TERINSTALL')
-        ok = False
+        core_ok = False
 
-# Check playwright
+# ── Playwright (opsional) ───────────────────────────────────────
 try:
     import playwright
     print(f'  [✓] playwright')
 except ImportError:
     print(f'  [ ] playwright — opsional')
 
-# Check pillow
+# ── GUI dependencies (opsional, butuh display server) ──────────
+gui_ok = True
+has_display = bool(os.environ.get('DISPLAY'))
+try:
+    import customtkinter
+    print(f'  [✓] customtkinter — GUI siap')
+except ImportError:
+    print(f'  [ ] customtkinter — TIDAK TERINSTALL (opsional, untuk GUI mode)')
+    gui_ok = False
+except Exception as e:
+    if 'display' in str(e).lower() or 'tk' in str(e).lower():
+        print(f'  [!] customtkinter — terinstall tapi butuh display server (GUI mode)')
+        print(f'      Jalankan: apt install xvfb && xvfb-run bash run_gui.sh')
+    else:
+        print(f'  [!] customtkinter — error: {e}')
+    gui_ok = False
+
 try:
     from PIL import Image
     print(f'  [✓] pillow')
 except ImportError:
-    print(f'  [✗] pillow — TIDAK TERINSTALL')
-    ok = False
+    print(f'  [ ] pillow — TIDAK TERINSTALL (opsional)')
 
-if not ok:
+if not core_ok:
     print()
-    print('  ❌ Beberapa dependencies bermasalah!')
+    print('  ❌ Core dependencies bermasalah! Bot TIDAK bisa jalan.')
     sys.exit(1)
 else:
     print()
-    print('  ✅ Semua dependencies OK')
+    if gui_ok:
+        print('  ✅ Semua dependencies OK (termasuk GUI)')
+    else:
+        print('  ✅ Core dependencies OK')
+        if has_display:
+            print('  ⚠️  GUI dependencies tidak lengkap — GUI mode mungkin tidak berfungsi')
+        else:
+            print('  ⚠️  GUI mode tidak tersedia (tidak ada display server)')
+        print('     Bot tetap bisa dijalankan via: source venv/bin/activate && python main.py tui')
 "
 
 if [ $? -ne 0 ]; then
-    warn "Ada masalah dengan dependencies. Coba jalankan ulang setup."
+    warn "Core dependencies bermasalah. Coba: source venv/bin/activate && pip install requests rich beautifulsoup4 lxml"
 fi
 
 # ── 6. Create default files ─────────────────────────────────────────
